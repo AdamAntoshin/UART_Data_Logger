@@ -1,7 +1,21 @@
 /*
    P1 (RX) - 11
    P2 (RX) - 20 (SDA)
+   P3 - A4
+   P4 - A5
 */
+
+#define DEBUG //Comment out to disable debugging mode
+
+#ifdef DEBUG
+  #define DEBUG_PRINT(x) Serial.print(x)
+  #define DEBUG_PRINTLN(x) Serial.println(x)
+  #define DEBUG_WRITE(x) Serial.write(x)
+#else
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINTLN(x)
+  #define DEBUG_WRITE(x)
+#endif
 
 //Libraries
 #include "wiring_private.h" // pinPeripheral() function
@@ -18,6 +32,7 @@
 #define BUFFER_TIMEOUT 2000
 #define CONFIG_SIZE 100
 #define TIME_STAMP_MAX_LENGTH 30
+#define MAX_SIZE 1073741824
 #define SD_CS 4
 
 //General parameters
@@ -98,6 +113,8 @@ void handle_p1();
 void handle_p2();
 void dump_p1_buff();
 void dump_p2_buff();
+void handle_log_size();
+void halt_f();
 
 //Initialize IO
 void init_IO() {
@@ -105,20 +122,24 @@ void init_IO() {
   //P1.begin(P1_BAUD_RATE_DEFAULT);
   //P2.begin(P2_BAUD_RATE_DEFAULT);
 
+  DEBUG_PRINTLN("Starting...");
+ 
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(P3_PIN, INPUT_PULLUP);
   pinMode(P4_PIN, INPUT_PULLUP);
   pinMode(SD_DETECT_PIN, INPUT_PULLUP);
+
+  DEBUG_PRINTLN("I/O PINS INITIALIZED");
  
   p3_last_state = digitalRead(P3_PIN);
   p4_last_state = digitalRead(P4_PIN);
 
-  //If button pressed, set halt flag
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), isr_button, FALLING);
-
+  DEBUG_PRINTLN("P3+4 READ");
+ 
   //If SD card detected, set SD flag
   attachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN), isr_sd, RISING);
+  DEBUG_PRINTLN("SD INTERRUPT ATTACHED");
 }
 
 //ISR function - set halt flag when button pressed/SD card removed
@@ -135,6 +156,11 @@ void isr_sd() {
 void init_coms() {
   P1.begin(p1_baud_rate);
   P2.begin(p2_baud_rate);
+
+  DEBUG_PRINT("P1 Initialized at baud rate: ");
+  DEBUG_PRINTLN(p1_baud_rate);
+  DEBUG_PRINT("P2 Initialized at baud rate: ");
+  DEBUG_PRINTLN(p2_baud_rate);
   }
 
 //Initialize SD card (legacy)
@@ -142,7 +168,7 @@ void init_SD() {
   //If init fails, blink LED and try again
   while (!SD.begin(SD_CS)) {
     int i;
-    Serial.println("SD INIT FAILED, TRYING AGAIN");
+    DEBUG_PRINTLN("SD INIT FAILED, TRYING AGAIN");
     for (i = 0; i < SD_ERROR_BLINK_NUM; i++) {
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
       delay(SD_ERROR_BLINK_DELAY);
@@ -163,8 +189,18 @@ uint32_t parse_sub_int_config(char str[], char sub[]) {
  
   p = strstr(str, sub); //Have pointer point to start of substring
   if (p == NULL) {
+    DEBUG_PRINT("Substring \"");
+    DEBUG_PRINT(sub);
+    DEBUG_PRINTLN("\" not found");
     return 0;
     }
+
+  DEBUG_PRINT("Substring \"");
+  DEBUG_PRINT(sub);
+  DEBUG_PRINTLN("\" found");
+  DEBUG_PRINT("Substring length: ");
+  DEBUG_PRINTLN(strlen(sub));
+ 
   p += strlen(sub); //Point to character after substring
 
   int i = 0, j = 0;
@@ -174,6 +210,10 @@ uint32_t parse_sub_int_config(char str[], char sub[]) {
     i++;
     }
 
+  DEBUG_PRINT("Number found after ");
+  DEBUG_PRINT(i);
+  DEBUG_PRINTLN(" bytes");
+ 
   //Read numbers until reaching a non-number character
   while (ascii_is_number(*(p + i))) {
     parsed_sub[j] = *(p + i);
@@ -183,11 +223,17 @@ uint32_t parse_sub_int_config(char str[], char sub[]) {
     i++;
     }
 
+  DEBUG_PRINT("Number length: ");
+  DEBUG_PRINTLN(j);
+ 
   //Turn number string into an actual number
   for (i = j - 1; i >= 0; i--) {
     parsed_sub_int += (parsed_sub[i] - 48) * pow(10, j - i - 1);
     }
    
+  DEBUG_PRINT("PARSED NUMBER: ");
+  DEBUG_PRINT(parsed_sub_int);
+ 
   return parsed_sub_int;
   }
 
@@ -195,18 +241,20 @@ uint32_t parse_sub_int_config(char str[], char sub[]) {
 void handle_config() {
   //If config file doesn't exist, create one with default values
   if (!SD.exists(config_name)) {
-    Serial.println("CONFIG NOT FOUND");
+    DEBUG_PRINTLN("CONFIG NOT FOUND");
     config_file = SD.open(config_name, FILE_WRITE);
 
     //If opening fails, SD card comm failed. Halt.
     if (!config_file) {
-      Serial.println("CONFIG OPEN FAILED");
+      DEBUG_PRINTLN("CONFIG OPEN FAILED");
       //NVIC_SystemReset();
       //halt_flag = true;
       halt_f();
       return;
       }
-
+     
+    DEBUG_PRINTLN("CONFIG FILE CREATED");
+   
     //Fill config file with default values
     config_file.print("P1: ");
     config_file.println(P1_BAUD_RATE_DEFAULT);
@@ -214,47 +262,49 @@ void handle_config() {
     config_file.println(P2_BAUD_RATE_DEFAULT);
     config_file.close();
 
+    DEBUG_PRINTLN("CONFIG FILE WRITTEN");
+   
     //Assign default baud rates
     p1_baud_rate = P1_BAUD_RATE_DEFAULT;
     p2_baud_rate = P2_BAUD_RATE_DEFAULT;
 
-    Serial.print("P1 = ");
-    Serial.println(p1_baud_rate);
-    Serial.print("P2 = ");
-    Serial.println(p2_baud_rate);
+    DEBUG_PRINT("P1 = ");
+    DEBUG_PRINTLN(p1_baud_rate);
+    DEBUG_PRINT("P2 = ");
+    DEBUG_PRINTLN(p2_baud_rate);
    
     return;
     }
 
   //If config file exists, open it
-  Serial.println("OPENING CONFIG TO READ");
+  DEBUG_PRINTLN("OPENING CONFIG TO READ");
   config_file = SD.open(config_name);
 
   //If open fails, SD card comm failed. Halt.
   if (!config_file) {
-      Serial.println("CONFIG OPEN FAILED");
+      DEBUG_PRINTLN("CONFIG OPEN FAILED");
       //NVIC_SystemReset();
       //halt_flag = true;
       halt_f();
       return;
       }
-  Serial.println("CONFIG FOUND");
+  DEBUG_PRINTLN("CONFIG FOUND");
 
   //Read config file and put in buffer
   int i = 0;
   while (config_file.available() > 0) {
     config_buff[i++] = config_file.read();
-    Serial.write(config_buff[i - 1]);
+    DEBUG_PRINTLN(config_buff[i - 1]);
     }
 
   config_file.close();
-  Serial.println("CONFIG CLOSED");
+  DEBUG_PRINTLN("CONFIG CLOSED");
 
   //Parse baud rates from buffer
   p1_baud_rate = parse_sub_int_config(config_buff, "P1:");
-  Serial.println("P1 PARSED");
+  DEBUG_PRINTLN("P1 PARSED");
   p2_baud_rate = parse_sub_int_config(config_buff, "P2:");
-  Serial.println("P2 PARSED");
+  DEBUG_PRINTLN("P2 PARSED");
 
   //If baud rate is 0, parsing failed or invalid config file. Assign default values.
   if (p1_baud_rate == 0) {
@@ -264,10 +314,10 @@ void handle_config() {
     p2_baud_rate = P2_BAUD_RATE_DEFAULT;
     }
 
-  Serial.print("P1 = ");
-  Serial.println(p1_baud_rate);
-  Serial.print("P2 = ");
-  Serial.println(p2_baud_rate);
+  DEBUG_PRINT("P1 = ");
+  DEBUG_PRINTLN(p1_baud_rate);
+  DEBUG_PRINT("P2 = ");
+  DEBUG_PRINTLN(p2_baud_rate);
   }
 
 //After boot, logger generates new file with incremented index
@@ -281,8 +331,8 @@ void generate_log_name() {
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
       led_timer = millis();
     }
-    Serial.print(log_name);
-    Serial.println(" exists...");
+    DEBUG_PRINT(log_name);
+    DEBUG_PRINTLN(" exists...");
     indx++;
     sprintf(log_name, "%s%04d.TXT", log_name_tmp, indx);
   }
@@ -291,14 +341,14 @@ void generate_log_name() {
 //Open (create) new log file
 void open_log_file() {
   char header[50];
-  Serial.print("Opening ");
-  Serial.println(log_name);
+  DEBUG_PRINT("Opening ");
+  DEBUG_PRINTLN(log_name);
 
   log_file = SD.open(log_name, FILE_WRITE);
 
   //If file open fails, halt
   if (!log_file) {
-    Serial.println("OPEN FAILED");
+    DEBUG_PRINTLN("OPEN FAILED");
     //halt_flag = true;
     halt_f();
     return;
@@ -311,7 +361,11 @@ void open_log_file() {
   log_file.println(header);
   log_file.println("");
 
+  DEBUG_PRINTLN("LOG HEADER WRITTEN");
+ 
   log_file.flush();
+
+  DEBUG_PRINTLN("LOG HEADER SAVED");
  
   //Mark file creation time for time stamps
   file_create_time = millis();
@@ -320,16 +374,22 @@ void open_log_file() {
 //Initialize SERCOM pins
 void init_SERCOM() {
   // Assign pins 10 & 11 SERCOM functionality
+  DEBUG_PRINTLN("Initializing SERCOM");
+ 
   pinPeripheral(10, PIO_SERCOM);
   pinPeripheral(11, PIO_SERCOM);
   pinPeripheral(20, PIO_SERCOM);
   //pinPeripheral(16, PIO_SERCOM_ALT);
+
+  DEBUG_PRINTLN("SERCOM Initialized");
 }
 
 //Fill both buffers with null terminator, "clearing" them
 void init_buffers() {
+  DEBUG_PRINTLN("Initializing BUFFERS");
   memset(p1_buff, '\0', BUFFER_SIZE);
   memset(p2_buff, '\0', BUFFER_SIZE);
+  DEBUG_PRINTLN("BUFFERS Initialized");
   }
 
 //Update status led to blink slowly while sd connected and faster when not
@@ -374,13 +434,13 @@ void handle_p1() {
     else if (c == ASCII_LF) {
       //strcat(p1_buff, "[LF]");
       //p1_buff_flag = true;
-      Serial.println("P1 LF");
+      DEBUG_PRINTLN("\nP1 LF");
     }
     //Replace carriage return with "[CR]" and set flag, ending the buffer
     else if (c == ASCII_CR) {
       strcat(p1_buff, "[CR]");
       p1_buff_flag = true;
-      Serial.println("P1 CR");
+      DEBUG_PRINTLN("\nP1 CR");
     }
     //Replace invalid characters with ASCII hex code
     else {
@@ -392,7 +452,7 @@ void handle_p1() {
     //Check if buffer is near full and set flag accordingly
     if (strlen(p1_buff) > BUFFER_SIZE - 7) {
       p1_buff_flag = true;
-      Serial.println("P1 BUFFER FULL");
+      DEBUG_PRINTLN("\nP1 BUFFER FULL");
     }
 
     //p1_timer = millis();
@@ -419,13 +479,13 @@ void handle_p2() {
     else if (c == ASCII_LF) {
       //strcat(p2_buff, "[LF]");
       //p2_buff_flag = true;
-      Serial.println("P2 LF");
+      DEBUG_PRINTLN("P2 LF");
     }
     //Replace carriage return with "[CR]" and set flag, ending the buffer
     else if (c == ASCII_CR) {
       strcat(p2_buff, "[CR]");
       p2_buff_flag = true;
-      Serial.println("P2 CR");
+      DEBUG_PRINTLN("P2 CR");
     }
     //Replace invalid characters with ASCII hex code
     else {
@@ -437,7 +497,7 @@ void handle_p2() {
     //Check if buffer is near full and set flag accordingly
     if (strlen(p2_buff) > BUFFER_SIZE - 7) {
       p2_buff_flag = true;
-      Serial.println("P2 BUFFER FULL");
+      DEBUG_PRINTLN("P2 BUFFER FULL");
     }
 
     //p2_timer = millis();
@@ -468,16 +528,12 @@ void handle_p3() {
 
       //If no bytes were written, communication with SD failed. Halt.
       if (l == 0) {
-        Serial.println("ERROR, HALTING");
+        DEBUG_PRINTLN("ERROR, HALTING");
         halt_f();
         //halt_flag = true;
         //NVIC_SystemReset();
       }
-    }
-   
-   
-
-   
+    }  
   }
 }
 
@@ -504,7 +560,7 @@ void handle_p4() {
  
       //If no bytes were written, communication with SD failed. Reboot.
       if (l == 0) {
-        Serial.println("ERROR, HALTING");
+        DEBUG_PRINTLN("ERROR, HALTING");
         halt_f();
         //halt_flag = true;
         //NVIC_SystemReset();
@@ -534,7 +590,7 @@ void dump_p1_buff() {
  
       //If no bytes were written, communication with SD failed. Halt.
       if (l == 0) {
-        Serial.println("ERROR, HALTING");
+        DEBUG_PRINTLN("ERROR, HALTING");
         halt_f();
         //halt_flag = true;
         //NVIC_SystemReset();
@@ -544,6 +600,8 @@ void dump_p1_buff() {
 
   //Clear buffer and deactivate flag
   memset(p1_buff, '\0', BUFFER_SIZE);
+  DEBUG_PRINTLN("P1 BUFFER CLEARED");
+ 
   p1_buff_flag = false;
 }
 
@@ -568,7 +626,7 @@ void dump_p2_buff() {
  
       //If no bytes were written, communication with SD failed. Reboot.
       if (l == 0) {
-        Serial.println("ERROR, HALTING");
+        DEBUG_PRINTLN("ERROR, HALTING");
         halt_flag = true;
         //NVIC_SystemReset();
       }
@@ -577,13 +635,28 @@ void dump_p2_buff() {
 
   //Clear buffer and deactivate flag
   memset(p2_buff, '\0', BUFFER_SIZE);
+  DEBUG_PRINTLN("P2 BUFFER CLEARED");
+ 
   p2_buff_flag = false;
 }
+
+void handle_log_size() {
+  if (is_sd_connected) {
+    if (log_file.size() > MAX_SIZE) {
+      log_file.print("\n\nMAX SIZE REACHED");
+      DEBUG_PRINTLN("MAX SIZE REACHED");
+      DEBUG_PRINT(log_file.size());
+      halt_f();
+      }
+    }
+  }
 
 //Halt
 void halt_f() {
   detachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN));
   detachInterrupt(digitalPinToInterrupt(BUTTON_PIN));
+  DEBUG_PRINTLN("\nFILE CLOSED");
+  log_file.println("\nFILE CLOSED");
   log_file.close();
   while (1) {
     digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
@@ -595,12 +668,11 @@ void setup() {
   init_IO();
 
   delay(1000);
-  Serial.println("HI");
+ 
   init_coms();
   init_SERCOM();
   init_buffers();
  
-  Serial.println("HELLO");
   led_timer = millis();
 }
 
@@ -609,7 +681,7 @@ void loop() {
 
   //If SD card was just connected, try to initialize file
   if (is_sd_connected && !sd_init_flag) {
-    Serial.println("SD DETECTED");
+    DEBUG_PRINTLN("SD DETECTED");
     if (SD.begin(SD_CS)) {
       handle_config();
       P1.end();
@@ -619,15 +691,20 @@ void loop() {
       generate_log_name();
       open_log_file();
 
+      //If button pressed, set halt flag
+      attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), isr_button, FALLING);
+      DEBUG_PRINTLN("HALT BUTTON INTERRUPT ATTACHED");
+     
       //If SD card is disconnected, set halt flag
       detachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN));
+      DEBUG_PRINTLN("SD INTERRUPT DETACHED");
       attachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN), isr_button, FALLING);
-
+      DEBUG_PRINTLN("SD INTERRUPT ATTACHED (DISCONNECTION DETECTION)");
       //Make sure SD card isn't initialized again
       sd_init_flag = true;
       }
     else {
-      Serial.println("SD INIT FAILED");
+      DEBUG_PRINTLN("SD INIT FAILED");
       is_sd_connected = false;
       }
     }
@@ -644,6 +721,8 @@ void loop() {
   if (p2_buff_flag) {
     dump_p2_buff();
   }
+
+  handle_log_size();
 
   if (halt_flag) {
     halt_f();
