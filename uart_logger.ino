@@ -73,14 +73,14 @@ const char p1_time_stamp_format[] = "[P1-%07d]:";
 const char p2_time_stamp_format[] = "[P2-%07d]:";
 const char p3_time_stamp_format[] = "[P3-%07d]:";
 const char p4_time_stamp_format[] = "[P4-%07d]:";
-uint32_t led_timer, file_create_time;
+uint32_t led_timer, file_create_time = 0;
 uint32_t p1_baud_rate = P1_BAUD_RATE_DEFAULT, p2_baud_rate = P2_BAUD_RATE_DEFAULT;
 char log_name_tmp[5] = "LOG_";
 char log_name[13];
 char config_name[] = "CONFIG.TXT";
 char p1_buff[BUFFER_SIZE], p2_buff[BUFFER_SIZE], config_buff[CONFIG_SIZE]; //RAM buffers
 bool p1_buff_flag = false, p2_buff_flag = false; //Flags: dump buffers to file?
-bool halt_flag = false, is_sd_connected = false, sd_init_flag = false, p3_last_state, p4_last_state;
+bool halt_flag = false, is_sd_connected = false, sd_init_flag = false, p3_last_state, p4_last_state, di_override_flag = false;
 uint16_t indx = 0; //File index
 
 //Link SERCOMs to declared UART channels
@@ -136,10 +136,16 @@ void init_IO() {
   p4_last_state = digitalRead(P4_PIN);
 
   DEBUG_PRINTLN("P3+4 READ");
- 
-  //If SD card detected, set SD flag
-  attachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN), isr_sd, RISING);
-  DEBUG_PRINTLN("SD INTERRUPT ATTACHED");
+
+  if (digitalRead(SD_DETECT_PIN) == HIGH) {
+    is_sd_connected = true;
+    DEBUG_PRINTLN("SD DETECTED ON BOOTUP");
+    }
+  else {
+    //If SD card detected, set SD flag
+    attachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN), isr_sd, RISING);
+    DEBUG_PRINTLN("SD INTERRUPT ATTACHED");
+    }
 }
 
 //ISR function - set halt flag when button pressed/SD card removed
@@ -511,7 +517,7 @@ void handle_p3() {
 
   bool p3_current_state = digitalRead(P3_PIN);
  
-  if (p3_current_state != p3_last_state) {
+  if (p3_current_state != p3_last_state || di_override_flag) {
     p3_last_state = p3_current_state;
 
     sprintf(stamp, p3_time_stamp_format, return_buff_time());
@@ -543,7 +549,7 @@ void handle_p4() {
 
   bool p4_current_state = digitalRead(P4_PIN);
  
-  if (p4_current_state != p4_last_state) {
+  if (p4_current_state != p4_last_state || di_override_flag) {
     p4_last_state = p4_current_state;
 
     sprintf(stamp, p4_time_stamp_format, return_buff_time());
@@ -673,13 +679,18 @@ void setup() {
   init_SERCOM();
   init_buffers();
  
+  di_override_flag = true;
+  handle_p3();
+  handle_p4();
+  di_override_flag = false;
+ 
   led_timer = millis();
 }
 
 void loop() {
   handle_status_led();
 
-  //If SD card was just connected, try to initialize file
+  //If SD card was *just* connected, try to initialize file
   if (is_sd_connected && !sd_init_flag) {
     DEBUG_PRINTLN("SD DETECTED");
     if (SD.begin(SD_CS)) {
@@ -691,6 +702,11 @@ void loop() {
       generate_log_name();
       open_log_file();
 
+      di_override_flag = true;
+      handle_p3();
+      handle_p4();
+      di_override_flag = false;
+     
       //If button pressed, set halt flag
       attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), isr_button, FALLING);
       DEBUG_PRINTLN("HALT BUTTON INTERRUPT ATTACHED");
