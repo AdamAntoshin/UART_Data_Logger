@@ -1,8 +1,10 @@
 /*
-   P1 (RX) - 11
-   P2 (RX) - 20 (SDA)
+   P1 - 11
+   P2 - 20 (SDA)
    P3 - A4
    P4 - A5
+   P5 - 0 (RX)
+   P6 - 5
 */
 
 #define DEBUG //Comment out to disable debugging mode
@@ -26,6 +28,8 @@
 #define USB_BAUD_RATE 115200
 #define P1_BAUD_RATE_DEFAULT 9600
 #define P2_BAUD_RATE_DEFAULT 9600
+#define P5_BAUD_RATE_DEFAULT 9600
+#define P6_BAUD_RATE_DEFAULT 9600
 
 //Buffer and logging parameters
 #define BUFFER_SIZE 250
@@ -64,6 +68,8 @@
 //arguments: sercom_num, RX_PIN, TX_PIN, RX_PAD, TX_PAD
 Uart P1 (&sercom1, 11, 10, SERCOM_RX_PAD_0, UART_TX_PAD_2);
 Uart P2 (&sercom3, 20, 6, SERCOM_RX_PAD_0, UART_TX_PAD_2);
+#define P5 Serial1
+Uart P6 (&sercom2, 5, 2, SERCOM_RX_PAD_3, UART_TX_PAD_2);
 
 //SD File object declaration
 File log_file, config_file;
@@ -73,13 +79,18 @@ const char p1_time_stamp_format[] = "[P1-%07d]:";
 const char p2_time_stamp_format[] = "[P2-%07d]:";
 const char p3_time_stamp_format[] = "[P3-%07d]:";
 const char p4_time_stamp_format[] = "[P4-%07d]:";
+const char p5_time_stamp_format[] = "[P5-%07d]:";
+const char p6_time_stamp_format[] = "[P6-%07d]:";
 uint32_t led_timer, file_create_time = 0;
 uint32_t p1_baud_rate = P1_BAUD_RATE_DEFAULT, p2_baud_rate = P2_BAUD_RATE_DEFAULT;
+uint32_t p5_baud_rate = P5_BAUD_RATE_DEFAULT, p6_baud_rate = P6_BAUD_RATE_DEFAULT;
 char log_name_tmp[5] = "LOG_";
 char log_name[13];
 char config_name[] = "CONFIG.TXT";
 char p1_buff[BUFFER_SIZE], p2_buff[BUFFER_SIZE], config_buff[CONFIG_SIZE]; //RAM buffers
+char p5_buff[BUFFER_SIZE], p6_buff[BUFFER_SIZE];
 bool p1_buff_flag = false, p2_buff_flag = false; //Flags: dump buffers to file?
+bool p5_buff_flag = false, p6_buff_flag = false;
 bool halt_flag = false, is_sd_connected = false, sd_init_flag = false, p3_last_state, p4_last_state, di_override_flag = false;
 uint16_t indx = 0; //File index
 
@@ -93,6 +104,13 @@ void SERCOM3_Handler()
 {
   P2.IrqHandler();
 }
+
+
+void SERCOM2_Handler()
+{
+  P6.IrqHandler();
+}
+
 
 //Function declarations
 void init_IO();
@@ -109,10 +127,9 @@ void init_SERCOM();
 void init_buffers();
 void handle_status_led();
 uint32_t return_buff_time();
-void handle_p1();
-void handle_p2();
-void dump_p1_buff();
-void dump_p2_buff();
+void handle_serial(Uart &P, char buff[], bool &flag, char p_name[]);
+void handle_dinput(uint8_t dpin, bool &last_state, const char time_stamp_format[]);
+void dump_serial_buff(char buff[], const char time_stamp_format[], bool &buff_flag, char p_name[]);
 void handle_log_size();
 void halt_f();
 
@@ -126,8 +143,10 @@ void init_IO() {
  
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(P3_PIN, INPUT_PULLUP);
-  pinMode(P4_PIN, INPUT_PULLUP);
+  //pinMode(P3_PIN, INPUT_PULLUP);
+  //pinMode(P4_PIN, INPUT_PULLUP);
+  pinMode(P3_PIN, INPUT);
+  pinMode(P4_PIN, INPUT);
   pinMode(SD_DETECT_PIN, INPUT_PULLUP);
 
   DEBUG_PRINTLN("I/O PINS INITIALIZED");
@@ -137,15 +156,7 @@ void init_IO() {
 
   DEBUG_PRINTLN("P3+4 READ");
 
-  if (digitalRead(SD_DETECT_PIN) == HIGH) {
-    is_sd_connected = true;
-    DEBUG_PRINTLN("SD DETECTED ON BOOTUP");
-    }
-  else {
-    //If SD card detected, set SD flag
-    attachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN), isr_sd, RISING);
-    DEBUG_PRINTLN("SD INTERRUPT ATTACHED");
-    }
+ 
 }
 
 //ISR function - set halt flag when button pressed/SD card removed
@@ -162,11 +173,29 @@ void isr_sd() {
 void init_coms() {
   P1.begin(p1_baud_rate);
   P2.begin(p2_baud_rate);
-
+  P5.begin(p5_baud_rate);
+  P6.begin(p6_baud_rate);
+ 
   DEBUG_PRINT("P1 Initialized at baud rate: ");
   DEBUG_PRINTLN(p1_baud_rate);
   DEBUG_PRINT("P2 Initialized at baud rate: ");
   DEBUG_PRINTLN(p2_baud_rate);
+  DEBUG_PRINT("P5 Initialized at baud rate: ");
+  DEBUG_PRINTLN(p5_baud_rate);
+  DEBUG_PRINT("P6 Initialized at baud rate: ");
+  DEBUG_PRINTLN(p6_baud_rate);
+  }
+
+void handle_SD_bootup() {
+  if (digitalRead(SD_DETECT_PIN) == HIGH) {
+    is_sd_connected = true;
+    DEBUG_PRINTLN("SD DETECTED ON BOOTUP");
+    }
+  else {
+    //If SD card detected, set SD flag
+    attachInterrupt(digitalPinToInterrupt(SD_DETECT_PIN), isr_sd, RISING);
+    DEBUG_PRINTLN("SD INTERRUPT ATTACHED");
+    }
   }
 
 //Initialize SD card (legacy)
@@ -266,6 +295,10 @@ void handle_config() {
     config_file.println(P1_BAUD_RATE_DEFAULT);
     config_file.print("P2: ");
     config_file.println(P2_BAUD_RATE_DEFAULT);
+    config_file.print("P5: ");
+    config_file.println(P5_BAUD_RATE_DEFAULT);
+    config_file.print("P6: ");
+    config_file.println(P6_BAUD_RATE_DEFAULT);
     config_file.close();
 
     DEBUG_PRINTLN("CONFIG FILE WRITTEN");
@@ -273,11 +306,17 @@ void handle_config() {
     //Assign default baud rates
     p1_baud_rate = P1_BAUD_RATE_DEFAULT;
     p2_baud_rate = P2_BAUD_RATE_DEFAULT;
+    p5_baud_rate = P5_BAUD_RATE_DEFAULT;
+    p6_baud_rate = P6_BAUD_RATE_DEFAULT;
 
     DEBUG_PRINT("P1 = ");
     DEBUG_PRINTLN(p1_baud_rate);
     DEBUG_PRINT("P2 = ");
     DEBUG_PRINTLN(p2_baud_rate);
+    DEBUG_PRINT("P5 = ");
+    DEBUG_PRINTLN(p5_baud_rate);
+    DEBUG_PRINT("P6 = ");
+    DEBUG_PRINTLN(p6_baud_rate);
    
     return;
     }
@@ -311,6 +350,10 @@ void handle_config() {
   DEBUG_PRINTLN("P1 PARSED");
   p2_baud_rate = parse_sub_int_config(config_buff, "P2:");
   DEBUG_PRINTLN("P2 PARSED");
+  p5_baud_rate = parse_sub_int_config(config_buff, "P5:");
+  DEBUG_PRINTLN("P5 PARSED");
+  p6_baud_rate = parse_sub_int_config(config_buff, "P6:");
+  DEBUG_PRINTLN("P6 PARSED");
 
   //If baud rate is 0, parsing failed or invalid config file. Assign default values.
   if (p1_baud_rate == 0) {
@@ -319,11 +362,21 @@ void handle_config() {
   if (p2_baud_rate == 0) {
     p2_baud_rate = P2_BAUD_RATE_DEFAULT;
     }
+  if (p5_baud_rate == 0) {
+    p5_baud_rate = P5_BAUD_RATE_DEFAULT;
+    }
+  if (p6_baud_rate == 0) {
+    p6_baud_rate = P6_BAUD_RATE_DEFAULT;
+    }
 
   DEBUG_PRINT("P1 = ");
   DEBUG_PRINTLN(p1_baud_rate);
   DEBUG_PRINT("P2 = ");
   DEBUG_PRINTLN(p2_baud_rate);
+  DEBUG_PRINT("P5 = ");
+  DEBUG_PRINTLN(p5_baud_rate);
+  DEBUG_PRINT("P6 = ");
+  DEBUG_PRINTLN(p6_baud_rate);
   }
 
 //After boot, logger generates new file with incremented index
@@ -365,6 +418,10 @@ void open_log_file() {
   log_file.println(header);
   sprintf(header, "P2 BAUDRATE: %lu BPS", p2_baud_rate);
   log_file.println(header);
+  sprintf(header, "P5 BAUDRATE: %lu BPS", p5_baud_rate);
+  log_file.println(header);
+  sprintf(header, "P6 BAUDRATE: %lu BPS", p6_baud_rate);
+  log_file.println(header);
   log_file.println("");
 
   DEBUG_PRINTLN("LOG HEADER WRITTEN");
@@ -385,7 +442,7 @@ void init_SERCOM() {
   pinPeripheral(10, PIO_SERCOM);
   pinPeripheral(11, PIO_SERCOM);
   pinPeripheral(20, PIO_SERCOM);
-  //pinPeripheral(16, PIO_SERCOM_ALT);
+  pinPeripheral(5, PIO_SERCOM);
 
   DEBUG_PRINTLN("SERCOM Initialized");
 }
@@ -395,6 +452,8 @@ void init_buffers() {
   DEBUG_PRINTLN("Initializing BUFFERS");
   memset(p1_buff, '\0', BUFFER_SIZE);
   memset(p2_buff, '\0', BUFFER_SIZE);
+  memset(p5_buff, '\0', BUFFER_SIZE);
+  memset(p6_buff, '\0', BUFFER_SIZE);
   DEBUG_PRINTLN("BUFFERS Initialized");
   }
 
@@ -419,117 +478,83 @@ uint32_t return_buff_time() {
   return (millis() - file_create_time) / 1000;
   }
 
-//Handle P1 buffer
-void handle_p1() {
-  if (P1.available() > 0) {
+void handle_test(char arr[], bool &b) {
+  arr[0] = 'x';
+  b = true;
+  }
+
+//Handle serial buffer
+void handle_serial(Uart &P, char buff[], bool &flag, char p_name[]) {
+  if (P.available() > 0) {
     //Serial.println("P1 RECIEVED");
-    char c = P1.read();
+    char c = P.read();
 
     //c is a valid character
     if (c >= 32 && c <= 126) {
       char strChar[2];
       strChar[1] = '\0';
       strChar[0] = c;
-      strcat(p1_buff, strChar); //Add to buffer string
+      strcat(buff, strChar); //Add to buffer string
     }
     //Replace tab with "[TAB]"
     else if (c == ASCII_TAB) {
-      strcat(p1_buff, "[TAB]");
+      strcat(buff, "[TAB]");
     }
     //Ignore line feeds
     else if (c == ASCII_LF) {
       //strcat(p1_buff, "[LF]");
       //p1_buff_flag = true;
-      DEBUG_PRINTLN("\nP1 LF");
+      //DEBUG_PRINTLN("\nP1 LF");
+      DEBUG_PRINTLN("\n");
+      DEBUG_WRITE(p_name);
+      DEBUG_PRINTLN(" LF");
     }
     //Replace carriage return with "[CR]" and set flag, ending the buffer
     else if (c == ASCII_CR) {
-      strcat(p1_buff, "[CR]");
-      p1_buff_flag = true;
-      DEBUG_PRINTLN("\nP1 CR");
+      strcat(buff, "[CR]");
+      flag = true;
+      //DEBUG_PRINTLN("\nP1 CR");
+      DEBUG_PRINTLN("");
+      DEBUG_WRITE(p_name);
+      DEBUG_PRINTLN(" CR");
     }
     //Replace invalid characters with ASCII hex code
     else {
       char hex_buff[10];
       sprintf(hex_buff, "[0x%02X]", c);
-      strcat(p1_buff, hex_buff);
+      strcat(buff, hex_buff);
     }
 
     //Check if buffer is near full and set flag accordingly
-    if (strlen(p1_buff) > BUFFER_SIZE - 7) {
-      p1_buff_flag = true;
-      DEBUG_PRINTLN("\nP1 BUFFER FULL");
+    if (strlen(buff) > BUFFER_SIZE - 7) {
+      flag = true;
+      //DEBUG_PRINTLN("\nP1 BUFFER FULL");
+      DEBUG_PRINTLN("\n");
+      DEBUG_WRITE(p_name);
+      DEBUG_PRINTLN(" BUFFER FULL");
     }
-
-    //p1_timer = millis();
   }
 }
 
-//Handle P2 buffer
-void handle_p2() {
-  if (P2.available() > 0) {
-    char c = P2.read();
-
-    //c is a valid character
-    if (c >= 32 && c <= 126) {
-      char strChar[2];
-      strChar[1] = '\0';
-      strChar[0] = c;
-      strcat(p2_buff, strChar);
-    }
-    //Replace tab with "[TAB]"
-    else if (c == ASCII_TAB) {
-      strcat(p2_buff, "[TAB]");
-    }
-    //Ignore line feeds
-    else if (c == ASCII_LF) {
-      //strcat(p2_buff, "[LF]");
-      //p2_buff_flag = true;
-      DEBUG_PRINTLN("P2 LF");
-    }
-    //Replace carriage return with "[CR]" and set flag, ending the buffer
-    else if (c == ASCII_CR) {
-      strcat(p2_buff, "[CR]");
-      p2_buff_flag = true;
-      DEBUG_PRINTLN("P2 CR");
-    }
-    //Replace invalid characters with ASCII hex code
-    else {
-      char hex_buff[10];
-      sprintf(hex_buff, "[0x%02X]", c);
-      strcat(p2_buff, hex_buff);
-    }
-
-    //Check if buffer is near full and set flag accordingly
-    if (strlen(p2_buff) > BUFFER_SIZE - 7) {
-      p2_buff_flag = true;
-      DEBUG_PRINTLN("P2 BUFFER FULL");
-    }
-
-    //p2_timer = millis();
-  }
-}
-
-//Handle P3 digital input
-void handle_p3() {
+void handle_dinput(uint8_t dpin, bool &last_state, const char time_stamp_format[]) {
   uint16_t l; //Number of bytes written to file
   char stamp[TIME_STAMP_MAX_LENGTH];
 
-  bool p3_current_state = digitalRead(P3_PIN);
+  bool current_state = digitalRead(dpin);
  
-  if (p3_current_state != p3_last_state || di_override_flag) {
-    p3_last_state = p3_current_state;
+  if (current_state != last_state || di_override_flag) {
+    last_state = current_state;
 
-    sprintf(stamp, p3_time_stamp_format, return_buff_time());
+    sprintf(stamp, time_stamp_format, return_buff_time());
     Serial.println("");
     Serial.print(stamp);
-    Serial.println(p3_current_state);
+    Serial.println(current_state);
 
     //Write to SD card if one is connected
     if (is_sd_connected) {
       log_file.println("");
       log_file.print(stamp);
-      l = log_file.println(p3_current_state);
+      l = log_file.println(current_state);
       log_file.flush();
 
       //If no bytes were written, communication with SD failed. Halt.
@@ -543,55 +568,23 @@ void handle_p3() {
   }
 }
 
-void handle_p4() {
-  uint16_t l; //Number of bytes written to file
-  char stamp[TIME_STAMP_MAX_LENGTH];
-
-  bool p4_current_state = digitalRead(P4_PIN);
- 
-  if (p4_current_state != p4_last_state || di_override_flag) {
-    p4_last_state = p4_current_state;
-
-    sprintf(stamp, p4_time_stamp_format, return_buff_time());
-    Serial.println("");
-    Serial.print(stamp);
-    Serial.println(p4_current_state);
-
-    //Write to SD card if one is connected
-    if (is_sd_connected) {
-      log_file.println("");
-      log_file.print(stamp);
-      l = log_file.println(p4_current_state);
-      log_file.flush();
- 
-      //If no bytes were written, communication with SD failed. Reboot.
-      if (l == 0) {
-        DEBUG_PRINTLN("ERROR, HALTING");
-        halt_f();
-        //halt_flag = true;
-        //NVIC_SystemReset();
-      }
-    }
-  }
-}
-
 //Dump P1 buffer into serial monitor and text file (if card connected)
-void dump_p1_buff() {
+void dump_serial_buff(char buff[], const char time_stamp_format[], bool &buff_flag, char p_name[]) {
   uint16_t l; //Number of bytes written to file
   char stamp[TIME_STAMP_MAX_LENGTH];
 
   //Check if buffer is not empty
-  if (p1_buff[0] != '\0') {
+  if (buff[0] != '\0') {
     //Generate and print time stamp
-    sprintf(stamp, p1_time_stamp_format, return_buff_time());
+    sprintf(stamp, time_stamp_format, return_buff_time());
     Serial.println("");
     Serial.print(stamp);
-    Serial.write(p1_buff);
+    Serial.write(buff);
 
     if (is_sd_connected) {
       log_file.println("");
       log_file.print(stamp);    
-      l = log_file.write(p1_buff);
+      l = log_file.write(buff);
       log_file.flush();
  
       //If no bytes were written, communication with SD failed. Halt.
@@ -605,45 +598,11 @@ void dump_p1_buff() {
   }
 
   //Clear buffer and deactivate flag
-  memset(p1_buff, '\0', BUFFER_SIZE);
-  DEBUG_PRINTLN("P1 BUFFER CLEARED");
+  memset(buff, '\0', BUFFER_SIZE);
+  DEBUG_WRITE(p_name);
+  DEBUG_PRINTLN(" BUFFER CLEARED");
  
-  p1_buff_flag = false;
-}
-
-//Dump P2 buffer into serial monitor and text file (if one is connected)
-void dump_p2_buff() {
-  uint16_t l; //Number of bytes written to file
-  char stamp[TIME_STAMP_MAX_LENGTH];
-
-  //Check if buffer is not empty
-  if (p2_buff[0] != '\0') {
-    //Generate and print time stamp
-    sprintf(stamp, p2_time_stamp_format, return_buff_time());
-    Serial.println("");
-    Serial.print(stamp);
-    Serial.write(p2_buff);
-
-    if (is_sd_connected) {
-      log_file.println("");
-      log_file.print(stamp);    
-      l = log_file.write(p2_buff);
-      log_file.flush();
- 
-      //If no bytes were written, communication with SD failed. Reboot.
-      if (l == 0) {
-        DEBUG_PRINTLN("ERROR, HALTING");
-        halt_flag = true;
-        //NVIC_SystemReset();
-      }
-    }
-  }
-
-  //Clear buffer and deactivate flag
-  memset(p2_buff, '\0', BUFFER_SIZE);
-  DEBUG_PRINTLN("P2 BUFFER CLEARED");
- 
-  p2_buff_flag = false;
+  buff_flag = false;
 }
 
 void handle_log_size() {
@@ -680,14 +639,31 @@ void setup() {
   init_buffers();
  
   di_override_flag = true;
-  handle_p3();
-  handle_p4();
+  //handle_p3();
+  //handle_p4();
+  handle_dinput(P3_PIN, p3_last_state, p3_time_stamp_format);
+  handle_dinput(P4_PIN, p4_last_state, p4_time_stamp_format);
   di_override_flag = false;
+
+  handle_SD_bootup();
  
   led_timer = millis();
 }
 
 void loop() {
+  /*
+  bool x = false;
+  char arrx[1];
+  arrx[0] = 'y';
+  DEBUG_PRINTLN("Before:");
+  DEBUG_PRINT("X = "); DEBUG_PRINTLN(x);
+  DEBUG_PRINT("arrx[0] = "); DEBUG_WRITE(arrx[0]); DEBUG_PRINTLN("");
+  handle_test(arrx, x);
+  DEBUG_PRINTLN("After:");
+  DEBUG_PRINT("X = "); DEBUG_PRINTLN(x);
+  DEBUG_PRINT("arrx[0] = "); DEBUG_WRITE(arrx[0]); DEBUG_PRINTLN("");
+  */
+ 
   handle_status_led();
 
   //If SD card was *just* connected, try to initialize file
@@ -697,14 +673,18 @@ void loop() {
       handle_config();
       P1.end();
       P2.end();
+      P5.end();
+      P6.end();
       init_coms();
       init_SERCOM();
       generate_log_name();
       open_log_file();
 
       di_override_flag = true;
-      handle_p3();
-      handle_p4();
+      //handle_p3();
+      //handle_p4();
+      handle_dinput(P3_PIN, p3_last_state, p3_time_stamp_format);
+      handle_dinput(P4_PIN, p4_last_state, p4_time_stamp_format);
       di_override_flag = false;
      
       //If button pressed, set halt flag
@@ -725,17 +705,27 @@ void loop() {
       }
     }
  
-  handle_p1();
-  handle_p2();
-  handle_p3();
-  handle_p4();
+  handle_serial(P1, p1_buff, p1_buff_flag, "P1");
+  handle_serial(P2, p2_buff, p2_buff_flag, "P2");
+  handle_dinput(P3_PIN, p3_last_state, p3_time_stamp_format);
+  handle_dinput(P4_PIN, p4_last_state, p4_time_stamp_format);
+  handle_serial(P5, p5_buff, p5_buff_flag, "P5");
+  handle_serial(P6, p6_buff, p6_buff_flag, "P6");
  
   if (p1_buff_flag) {
-    dump_p1_buff();
+    dump_serial_buff(p1_buff, p1_time_stamp_format, p1_buff_flag, "P1");
   }
 
   if (p2_buff_flag) {
-    dump_p2_buff();
+    dump_serial_buff(p2_buff, p2_time_stamp_format, p2_buff_flag, "P2");
+  }
+
+  if (p5_buff_flag) {
+    dump_serial_buff(p5_buff, p5_time_stamp_format, p5_buff_flag, "P5");
+  }
+
+  if (p6_buff_flag) {
+    dump_serial_buff(p6_buff, p6_time_stamp_format, p6_buff_flag, "P6");
   }
 
   handle_log_size();
